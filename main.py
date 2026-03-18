@@ -29,31 +29,32 @@ def send_line_push(message):
     return res.status_code
 
 def get_notice_and_disposition():
-    """抓取證交所最新注意及處置股"""
-    # 證交所 API 預設抓取最新公布資料
+    headers = {'User-Agent': 'Mozilla/5.0'}
     notice_url = "https://www.twse.com.tw/zh/api/noticeData?response=json"
     punish_url = "https://www.twse.com.tw/zh/api/punishData?response=json"
 
     msg = "⚠️ 【注意/處置股清單】\n"
 
-    # 1. 注意股
-    res_n = requests.get(notice_url).json()
-    if res_n.get('stat') == 'OK' and res_n.get('data'):
-        msg += "📍注意股:\n"
-        for i in res_n['data'][:10]: # 僅列出前10筆避免訊息過長
-            msg += f"• {i[1]} {i[2]}\n"
-    else:
-        msg += "📍注意股: 今日無新增或查無資料\n"
+    try:
+        # 注意股
+        res_n = requests.get(notice_url, headers=headers, timeout=10).json()
+        if res_n.get('stat') == 'OK' and res_n.get('data'):
+            msg += "📍注意股:\n"
+            for i in res_n['data'][:10]:
+                msg += f"• {i[1]} {i[2]}\n"
+        else:
+            msg += "📍注意股: 今日無新增\n"
 
-    # 2. 處置股 (處置通常有日期區間)
-    res_p = requests.get(punish_url).json()
-    if res_p.get('stat') == 'OK' and res_p.get('data'):
-        msg += "\n🚫處置股 (處置中):\n"
-        for i in res_p['data'][:8]:
-            # i[1]代號, i[2]名稱, i[3]處置期間
-            msg += f"• {i[1]} {i[2]}\n  ({i[3]})\n"
-    else:
-        msg += "\n🚫處置股: 目前無處置標的\n"
+        # 處置股
+        res_p = requests.get(punish_url, headers=headers, timeout=10).json()
+        if res_p.get('stat') == 'OK' and res_p.get('data'):
+            msg += "\n🚫處置股 (處置中):\n"
+            for i in res_p['data'][:8]:
+                msg += f"• {i[1]} {i[2]} ({i[3]})\n"
+        else:
+            msg += "\n🚫處置股: 無\n"
+    except Exception as e:
+        msg += f"讀取失敗: {e}\n"
 
     return msg
 
