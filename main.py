@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 
+# 讀取金鑰
 LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
@@ -12,57 +13,57 @@ def send_line_push(message):
     payload = {"to": USER_ID, "messages": [{"type": "text", "text": message}]}
     requests.post(url, headers=headers, json=payload, timeout=15)
 
-def get_real_stock_data():
-    # 擴大搜索到 14 天，確保一定能抓到像你表格中 3/5 就開始處置的股票
+def get_pro_stock_report():
     today_dt = datetime.now()
-    start_date = (today_dt - timedelta(days=14)).strftime('%Y-%m-%d')
-    today = today_dt.strftime('%Y-%m-%d')
+    today_str = today_dt.strftime('%Y-%m-%d')
+    # 暴力抓取過去 30 天，確保絕對能覆蓋所有正在生效的處置股
+    start_date = (today_dt - timedelta(days=30)).strftime('%Y-%m-%d')
     
     base_url = "https://api.finmindtrade.com/api/v4/data"
-    msg = "📊 【台股實時清單核對】\n"
-
-    # --- 處置股核對 (對標你提供的表格) ---
+    report = "📋 【台股專業版：生效中清單】\n"
+    
+    # 1. 處置股核對 (對標官網名單)
     try:
-        res_p = requests.get(f"{base_url}?dataset=TaiwanStockDisposition&start_date={start_date}", timeout=25).json()
-        if res_p.get('data'):
-            df_p = pd.DataFrame(res_p['data'])
-            # 核心邏輯：結束日期必須大於等於今天，才是「現在處置中」
-            active = df_p[df_p['end_date'] >= today].sort_values('end_date')
-            
-            if not active.empty:
-                msg += "\n🚫 處置中標的 (核對成功):\n"
-                for _, row in active.iterrows():
-                    msg += f"• {row['stock_id']} {row.get('stock_name', '')} (至 {row['end_date']})\n"
+        res = requests.get(f"{base_url}?dataset=TaiwanStockDisposition&start_date={start_date}", timeout=30).json()
+        if res.get('data'):
+            df = pd.DataFrame(res['data'])
+            # 關鍵邏輯：只顯示「今天還沒結束」的處置標的
+            active_df = df[df['end_date'] >= today_str].sort_values('end_date')
+            if not active_df.empty:
+                report += "\n🚫 【處置股生效中】\n"
+                for _, row in active_df.iterrows():
+                    report += f"• {row['stock_id']} {row.get('stock_name','')} (至 {row['end_date']})\n"
             else:
-                msg += "\n🚫 目前無生效中之處置股\n"
+                report += "\n🚫 目前無生效中處置標的\n"
         else:
-            msg += "\n🚫 API 資料庫尚未同步最新處置名單\n"
+            report += "\n🚫 處置資料暫時無法更新\n"
     except:
-        msg += "\n🚫 處置股連線異常\n"
+        report += "\n🚫 處置資料庫連線超時\n"
 
-    # --- 注意股 ---
+    # 2. 注意股核對 (抓取最近 5 天內的所有公告)
     try:
-        res_n = requests.get(f"{base_url}?dataset=TaiwanStockNotice&start_date={start_date}", timeout=25).json()
+        notice_start = (today_dt - timedelta(days=5)).strftime('%Y-%m-%d')
+        res_n = requests.get(f"{base_url}?dataset=TaiwanStockNotice&start_date={notice_start}", timeout=30).json()
         if res_n.get('data'):
             df_n = pd.DataFrame(res_n['data'])
-            last_date = df_n['date'].max()
-            msg += f"\n⚠️ 最新注意股 (公告日: {last_date}):\n"
-            # 抓出最新一次公告的所有股票
-            latest_notices = df_n[df_n['date'] == last_date]
-            for _, row in latest_notices.head(10).iterrows():
-                msg += f"• {row['stock_id']} {row.get('stock_name', '')}\n"
+            # 抓出最新的一個公告日
+            latest_day = df_n['date'].max()
+            report += f"\n⚠️ 【最新注意股公告】({latest_day})\n"
+            latest_list = df_n[df_n['date'] == latest_day]
+            for _, row in latest_list.iterrows():
+                report += f"• {row['stock_id']} {row.get('stock_name','')}\n"
         else:
-            msg += "\n⚠️ 近期無注意股公告資料\n"
+            report += "\n⚠️ 近日暫無注意股公告\n"
     except:
-        msg += "\n⚠️ 注意股連線異常\n"
+        report += "\n⚠️ 注意股資料庫連線超時\n"
 
-    return msg
+    return report
 
 def main():
     if not LINE_ACCESS_TOKEN or not USER_ID: return
-    content = get_real_stock_data()
+    content = get_pro_stock_report()
     now_str = datetime.now().strftime('%m/%d %H:%M')
-    final_msg = f"{content}\n\n更新時間: {now_str}\n請注意投資風險！"
+    final_msg = f"{content}\n\n數據同步時間: {now_str}\n※ 資訊以證交所最終公告為準"
     send_line_push(final_msg)
 
 if __name__ == "__main__":
