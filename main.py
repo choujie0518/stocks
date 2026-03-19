@@ -6,59 +6,59 @@ from datetime import datetime
 LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
-def get_disposition_stocks():
-    """抓取處置股及其正確起訖日期"""
-    url = "https://www.twse.com.tw/zh/announcement/punish.html" # 證交所官方
+def get_wantgoo_data():
+    """從玩股網精準抓取處置股與起訖日"""
+    url = "https://www.wantgoo.com/stock/public-info/disposition"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     try:
         res = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(res.text, 'html.parser')
-        # 尋找表格內容
+        # 抓取表格中所有股票行
         table = soup.find('table')
-        if not table: return "🚫 【今日處置股】\n  (今日暫無處置標的或尚未更新)\n"
+        if not table: return "🚫 【今日處置股】\n  (無法讀取表格，請稍後再試)\n"
         
-        rows = table.find_all('tr')
+        rows = table.find_all('tr')[1:] # 跳過表頭
         report = "🚫 【今日處置股名單】\n"
-        count = 0
-        for row in rows[1:]: # 跳過標題
+        found = False
+        for row in rows:
             cols = row.find_all('td')
-            if len(cols) >= 3:
-                date_range = cols[0].get_text(strip=True) # 起訖日期
-                stock_info = cols[1].get_text(strip=True) + " " + cols[2].get_text(strip=True) # 代號+名稱
-                report += f"• {stock_info}\n  ⏳ {date_range}\n"
-                count += 1
-            if count >= 15: break # 限制長度
-        return report + "\n"
-    except:
-        return "❌ 處置股抓取失敗，請檢查網路。\n"
+            if len(cols) >= 4:
+                stock_info = cols[0].get_text(strip=True) # 代號名稱
+                start_date = cols[2].get_text(strip=True) # 起始日期
+                end_date = cols[3].get_text(strip=True)   # 結束日期
+                report += f"• {stock_info}\n  ⏳ {start_date} ~ {end_date}\n"
+                found = True
+        return report + "\n" if found else "🚫 今日暫無處置股資料\n"
+    except Exception as e:
+        return f"❌ 處置股讀取異常\n"
 
-def get_investor_conference():
-    """抓取今日法說會 (切換至 Yahoo 財經源，資訊較即時)"""
-    url = "https://tw.stock.yahoo.com/calendar/conference"
+def get_yahoo_investor():
+    """抓取今日法說會 (改用 HiStock 備用源以確保數據)"""
+    url = "https://histock.tw/stock/mktcalendar.aspx"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         res = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(res.text, 'html.parser')
-        # 抓取清單項
-        items = soup.find_all('li', class_='List(n)')
+        today_str = datetime.now().strftime('%m/%d')
         report = "🎙️ 【今日法說會資訊】\n"
+        # 尋找包含今日日期的所有連結文字
         found = False
-        for item in items:
-            text = item.get_text(strip=True)
-            # 簡單過濾代號與名稱
-            report += f"• {text}\n"
-            found = True
+        for link in soup.select('a[title*="法說會"]'):
+            parent_text = link.find_parent('div').get_text() if link.find_parent('div') else ""
+            if today_str in parent_text or "今日" in parent_text:
+                report += f"• {link.get_text(strip=True)}\n"
+                found = True
         
         if not found:
-            # 備用方案：抓取表格類型的法說
-            titles = soup.select('div[class*="StyledTitle"]')
-            for t in titles:
-                report += f"• {t.get_text(strip=True)}\n"
-                found = True
-                
-        return report if found else "🎙️ 【今日法說會】\n  (今日暫無公開法說資訊)\n"
+            # 暴力搜尋所有 td
+            for td in soup.find_all('td'):
+                if "法說會" in td.get_text() and today_str in td.get_text():
+                    report += f"• {td.get_text(strip=True).replace('法說會', '')}\n"
+                    found = True
+                    
+        return report + "\n" if found else "🎙️ 【今日法說會】\n  (今日暫無或尚未更新)\n"
     except:
-        return "🎙️ 【今日法說會】\n  (抓取異常)\n"
+        return "🎙️ 法說會抓取異常\n"
 
 def send_line(msg):
     if not LINE_TOKEN or not USER_ID: return
@@ -68,10 +68,9 @@ def send_line(msg):
     requests.post(url, headers=headers, json=payload)
 
 if __name__ == "__main__":
-    dis_report = get_disposition_stocks()
-    con_report = get_investor_conference()
+    dis_report = get_wantgoo_data()
+    con_report = get_yahoo_investor()
     
-    # 台灣時間顯示
     now = datetime.now().strftime('%Y/%m/%d')
     final_msg = f"🚀 台股自動報表 ({now})\n\n{dis_report}{con_report}"
     send_line(final_msg)
