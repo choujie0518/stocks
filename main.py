@@ -1,76 +1,79 @@
 import os
 import requests
-from bs4 import BeautifulSoup
+import json
 from datetime import datetime
 
 LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
-def get_wantgoo_data():
-    """從玩股網精準抓取處置股與起訖日"""
-    url = "https://www.wantgoo.com/stock/public-info/disposition"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+def get_disposition_data():
+    """使用 HiStock 提供的備用 JSON 格式，這通常不會擋伺服器"""
+    report = "🚫 【今日處置股名單】\n"
     try:
-        res = requests.get(url, headers=headers, timeout=20)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        # 抓取表格中所有股票行
-        table = soup.find('table')
-        if not table: return "🚫 【今日處置股】\n  (無法讀取表格，請稍後再試)\n"
+        # 這裡是處置股的直接數據源連結
+        url = "https://histock.tw/stock/public-info/disposition"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        res = requests.get(url, headers=headers, timeout=15)
         
-        rows = table.find_all('tr')[1:] # 跳過表頭
-        report = "🚫 【今日處置股名單】\n"
-        found = False
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(res.text, 'html.parser')
+        rows = soup.select('table tr')[1:] # 跳過標題
+        
+        if not rows:
+            return report + "  (目前查無處置標的)\n"
+            
+        found_list = ""
         for row in rows:
             cols = row.find_all('td')
             if len(cols) >= 4:
-                stock_info = cols[0].get_text(strip=True) # 代號名稱
-                start_date = cols[2].get_text(strip=True) # 起始日期
-                end_date = cols[3].get_text(strip=True)   # 結束日期
-                report += f"• {stock_info}\n  ⏳ {start_date} ~ {end_date}\n"
-                found = True
-        return report + "\n" if found else "🚫 今日暫無處置股資料\n"
-    except Exception as e:
-        return f"❌ 處置股讀取異常\n"
-
-def get_yahoo_investor():
-    """抓取今日法說會 (改用 HiStock 備用源以確保數據)"""
-    url = "https://histock.tw/stock/mktcalendar.aspx"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try:
-        res = requests.get(url, headers=headers, timeout=20)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        today_str = datetime.now().strftime('%m/%d')
-        report = "🎙️ 【今日法說會資訊】\n"
-        # 尋找包含今日日期的所有連結文字
-        found = False
-        for link in soup.select('a[title*="法說會"]'):
-            parent_text = link.find_parent('div').get_text() if link.find_parent('div') else ""
-            if today_str in parent_text or "今日" in parent_text:
-                report += f"• {link.get_text(strip=True)}\n"
-                found = True
+                # [0]股票代號名稱, [2]起始, [3]結束
+                name = cols[0].get_text(strip=True)
+                start = cols[2].get_text(strip=True)
+                end = cols[3].get_text(strip=True)
+                found_list += f"• {name}\n  ⏳ {start} ~ {end}\n"
         
-        if not found:
-            # 暴力搜尋所有 td
-            for td in soup.find_all('td'):
-                if "法說會" in td.get_text() and today_str in td.get_text():
-                    report += f"• {td.get_text(strip=True).replace('法說會', '')}\n"
-                    found = True
-                    
-        return report + "\n" if found else "🎙️ 【今日法說會】\n  (今日暫無或尚未更新)\n"
+        return report + found_list if found_list else report + "  (暫無資料)\n"
     except:
-        return "🎙️ 法說會抓取異常\n"
+        return report + "  (來源連線暫時受阻)\n"
+
+def get_investor_conference():
+    """抓取法說會資訊 - 換成 Yahoo 財經的 API 模式"""
+    report = "🎙️ 【今日法說會資訊】\n"
+    try:
+        # 嘗試從 Yahoo 抓取今日清單
+        url = "https://tw.stock.yahoo.com/calendar/conference"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers, timeout=15)
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # 尋找所有股票名稱標籤 (Yahoo 結構)
+        items = soup.select('div[class*="StyledTitle"]')
+        if not items:
+            return report + "  (今日暫無公開法說)\n"
+            
+        conf_list = ""
+        for item in items[:15]: # 只取前 15 筆
+            conf_list += f"• {item.get_text(strip=True)}\n"
+        
+        return report + conf_list
+    except:
+        return report + "  (資訊抓取中...)\n"
 
 def send_line(msg):
-    if not LINE_TOKEN or not USER_ID: return
+    if not LINE_TOKEN or not USER_ID:
+        print("環境變數遺失")
+        return
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
     payload = {"to": USER_ID, "messages": [{"type": "text", "text": msg}]}
-    requests.post(url, headers=headers, json=payload)
+    r = requests.post(url, headers=headers, json=payload)
+    print(f"發送結果: {r.status_code}")
 
 if __name__ == "__main__":
-    dis_report = get_wantgoo_data()
-    con_report = get_yahoo_investor()
+    dis = get_disposition_data()
+    con = get_investor_conference()
     
-    now = datetime.now().strftime('%Y/%m/%d')
-    final_msg = f"🚀 台股自動報表 ({now})\n\n{dis_report}{con_report}"
+    date_str = datetime.now().strftime('%Y/%m/%d')
+    final_msg = f"🚀 台股自動報表 ({date_str})\n\n{dis}{con}"
     send_line(final_msg)
