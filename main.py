@@ -1,9 +1,9 @@
 import os
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# --- 讀取金鑰 ---
+# 讀取金鑰
 LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
@@ -16,56 +16,53 @@ def send_line_push(message):
     except:
         pass
 
-def get_stable_data():
-    today_dt = datetime.now()
-    # 抓取範圍擴大到 10 天，確保即便更新延遲也一定有資料
-    start_date = (today_dt - timedelta(days=10)).strftime('%Y-%m-%d')
-    today = today_dt.strftime('%Y-%m-%d')
+def get_yahoo_stock_data():
+    """從 Yahoo 股市 API 獲取注意股與處置股"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    }
     
-    base_url = "https://api.finmindtrade.com/api/v4/data"
-    report = "⚠️ 【台股注意/處置最新清單】\n"
+    report = "⚠️ 【Yahoo 股市即時清單】\n"
     
-    # 1. 注意股：抓取最近一次的完整公告
     try:
-        res = requests.get(f"{base_url}?dataset=TaiwanStockNotice&start_date={start_date}", timeout=25).json()
-        if res.get('data'):
-            df = pd.DataFrame(res['data'])
-            last_date = df['date'].max() # 找到資料庫裡最新的公告日
-            df_last = df[df['date'] == last_date]
-            report += f"\n📍 注意股 (公告日:{last_date}):\n"
-            for _, row in df_last.head(15).iterrows():
-                report += f"• {row['stock_id']} {row.get('stock_name', '')}\n"
+        # 1. 抓取注意股 (Yahoo 的 API 介面)
+        notice_url = "https://tw.stock.yahoo.com/_json/stock-notice-list"
+        res_n = requests.get(notice_url, headers=headers, timeout=20).json()
+        
+        # Yahoo 資料結構通常在 'list' 欄位
+        notices = res_n.get('list', [])
+        if notices:
+            report += "📍 最新注意股:\n"
+            for item in notices[:12]: # 顯示前 12 筆
+                report += f"• {item.get('symbol', '')} {item.get('name', '')}\n"
         else:
-            report += "\n📍 注意股: 查無近期公告\n"
-    except:
-        report += "\n📍 注意股: 資料擷取暫時中斷\n"
+            report += "📍 注意股: 暫無最新公告\n"
 
-    # 2. 處置股：抓取目前生效中的清單
-    try:
-        res = requests.get(f"{base_url}?dataset=TaiwanStockDisposition&start_date={start_date}", timeout=25).json()
-        if res.get('data'):
-            df_p = pd.DataFrame(res['data'])
-            # 過濾出到今天為止還沒結束處置的股票
-            active = df_p[df_p['end_date'] >= today].sort_values('end_date')
-            if not active.empty:
-                report += "\n🚫 處置中 (生效期內):\n"
-                for _, row in active.iterrows():
-                    report += f"• {row['stock_id']} (至 {row['end_date']})\n"
-            else:
-                report += "\n🚫 處置股: 目前無生效標的\n"
+        # 2. 抓取處置股
+        disposition_url = "https://tw.stock.yahoo.com/_json/stock-disposition-list"
+        res_d = requests.get(disposition_url, headers=headers, timeout=20).json()
+        
+        dispositions = res_d.get('list', [])
+        if dispositions:
+            report += "\n🚫 目前處置中:\n"
+            for item in dispositions[:10]:
+                report += f"• {item.get('symbol', '')} {item.get('name', '')} ({item.get('endDate', '期間內')})\n"
         else:
-            report += "\n🚫 處置股: 查無資料\n"
-    except:
-        report += "\n🚫 處置股: 連線異常\n"
-
+            report += "\n🚫 處置股: 目前無標的\n"
+            
+    except Exception as e:
+        report += f"\n❌ Yahoo 資料源擷取異常，請手動確認"
+        
     return report
 
 def main():
     if not LINE_ACCESS_TOKEN or not USER_ID: return
     
-    content = get_stable_data()
-    now_str = datetime.now().strftime('%m/%d %H:%M')
-    final_msg = f"💡 台股早報 ({now_str})\n\n{content}\n數據源：FinMind 穩定供應"
+    # 執行 Yahoo 抓取任務
+    stock_content = get_yahoo_stock_data()
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+    
+    final_msg = f"💡 台股早報 ({now_str})\n\n{stock_content}\n\n來源：Yahoo 股市即時同步"
     
     send_line_push(final_msg)
 
