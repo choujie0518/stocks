@@ -3,37 +3,47 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
+# 讀取金鑰
+LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
-SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSwV0nkehAeEtnuYWL2wkJjWNeKcdVgOpZGy4Bse_ONLYPihJjDgCINTbJpaeMIAxo8CtbKx0tT_1Bs/pub?output=csv" # 務必確認這是發布後的連結
+SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSwV0nkehAeEtnuYWL2wkJjWNeKcdVgOpZGy4Bse_ONLYPihJjDgCINTbJpaeMIAxo8CtbKx0tT_1Bs/pub?output=csv" # 務必確認這是發布後的連結
 
-def send_line_push(message):
+def debug_line(msg):
+    """這是一個會印出錯誤原因的發送函式"""
     url = "https://api.line.me/v2/bot/message/push"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_ACCESS_TOKEN}"}
-    payload = {"to": USER_ID, "messages": [{"type": "text", "text": message}]}
-    requests.post(url, headers=headers, json=payload, timeout=15)
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
+    payload = {"to": USER_ID, "messages": [{"type": "text", "text": msg}]}
+    
+    response = requests.post(url, headers=headers, json=payload)
+    print(f"--- LINE API 狀態碼: {response.status_code} ---")
+    print(f"--- LINE API 回傳內容: {response.text} ---")
+    return response.status_code
 
 def main():
-    if not LINE_ACCESS_TOKEN or not USER_ID:
-        print("❌ 環境變數缺失")
+    print(f"--- 開始執行任務 {datetime.now()} ---")
+    
+    if not LINE_TOKEN or not USER_ID:
+        print("❌ 錯誤：找不到環境變數！請檢查 GitHub Secrets 設定。")
         return
 
     try:
-        # 讀取 CSV
-        df = pd.read_csv(SHEET_CSV_URL, header=None)
-        
+        df = pd.read_csv(SHEET_URL, header=None)
         if df.empty:
-            content = "⚠️ 讀取成功，但 CSV 內容是空的！請檢查試算表。"
+            content = "⚠️ 試算表是空的"
         else:
-            content = "📈 【即時報表內容】\n"
-            for _, row in df.iterrows():
-                content += f"• {row[0]} {row[1]} | {row[2]}\n"
+            # 抓前五筆資料測試
+            content = "📈 資料測試：\n" + df.head(5).to_string(index=False, header=False)
     except Exception as e:
-        content = f"❌ CSV 讀取失敗，請檢查網址或發布狀態。\n錯誤原因: {str(e)}"
+        content = f"❌ CSV 讀取失敗: {e}"
 
-    now_str = datetime.now().strftime('%m/%d %H:%M')
-    send_line_push(f"💡 測試推播 ({now_str})\n\n{content}")
-    print("發送程序已完成")
+    print(f"--- 準備發送內容 ---\n{content}")
+    
+    status = debug_line(f"💡 自動報測試\n{content}")
+    
+    if status == 200:
+        print("✅ LINE 發送成功！請檢查手機。")
+    else:
+        print("❌ LINE 發送失敗，請看上方回傳內容。")
 
 if __name__ == "__main__":
     main()
