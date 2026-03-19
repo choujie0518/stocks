@@ -1,67 +1,56 @@
 import os
 import requests
-import json
 from datetime import datetime
 
 LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
-def get_real_deal():
-    """使用證交所 RWD 專用 API，這是不會擋 IP 的穩定源"""
-    # 這是處置股的真正底層 API
+def get_clean_disposition():
+    """證交所 API 強效去重與格式化"""
     url = "https://www.twse.com.tw/rwd/zh/announcement/punish?response=json"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
-    
     try:
         res = requests.get(url, headers=headers, timeout=15)
-        raw_data = res.json()
+        data = res.json()
+        if 'data' not in data: return "🚫 【今日處置股】\n  (官方更新中)\n"
         
-        # 建立一個字典來去重，Key 就是股票代號
-        # 只要 code 相同，後面的資料就會覆蓋前面的，保證不重複
-        stock_dict = {}
+        # 關鍵去重邏輯：使用 dict，鍵值為代號，確保 3054 這種重複項只留最後一筆
+        final_list = {}
+        for row in data['data']:
+            code = str(row[1]).strip()
+            name = str(row[2]).strip()
+            duration = str(row[0]).strip()
+            # 存入字典：這會自動覆蓋掉重複的代號
+            final_list[code] = f"• {code} {name}\n  ⏳ {duration}"
         
-        if 'data' in raw_data:
-            for row in raw_data['data']:
-                date_range = row[0] # 起訖日期
-                code = row[1]       # 代號
-                name = row[2]       # 中文名稱
-                
-                # 強制格式化：代號 + 名稱 + 起訖
-                stock_dict[code] = f"• {code} {name}\n  ⏳ {date_range}"
+        if not final_list: return "🚫 【今日處置股】\n  (今日無資料)\n"
         
         report = "🚫 【今日處置股名單】\n"
-        if not stock_dict:
-            report += "  (今日暫無處置標的)\n"
-        else:
-            report += "\n".join(stock_dict.values())
-        
-        return report + "\n\n"
-    except Exception as e:
-        return f"❌ 處置股 API 連線失敗: {str(e)}\n\n"
+        return report + "\n".join(final_list.values()) + "\n\n"
+    except:
+        return "❌ 處置股讀取失敗\n\n"
 
-def get_investor_conf():
-    """法說會：改用公開資訊觀測站的 API 模式，這最準"""
+def get_investor_conf_robust():
+    """法說會：改用最原始的文字特徵比對法"""
     report = "🎙️ 【今日法說會資訊】\n"
     try:
-        # 改用更開放的 Yahoo 財經 API 接口，避開網站阻擋
+        # 改用公開資訊較集中的財經新聞源
         url = "https://tw.stock.yahoo.com/calendar/conference"
         res = requests.get(url, timeout=15)
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # 這次我們直接找所有包含 '( )' 代號格式的標題
+        # 針對 Yahoo 結構抓取所有可能標題
+        titles = soup.select('div[class*="StyledTitle"]')
         found = []
-        # Yahoo 的法說會標題通常在特定 class 下
-        items = soup.select('div[class*="StyledTitle"]')
-        for item in items:
-            t = item.get_text(strip=True)
-            if t: found.append(f"• {t}")
+        for t in titles:
+            text = t.get_text(strip=True)
+            if text: found.append(f"• {text}")
             
-        if not found:
-            return report + "  (今日暫無公開法說)\n"
+        if not found: return report + "  (今日暫無或尚未更新)\n"
         return report + "\n".join(found[:10])
     except:
-        return report + "  (資料庫維護中)\n"
+        return report + "  (讀取異常)\n"
 
 def send_line(msg):
     if not LINE_TOKEN or not USER_ID: return
@@ -71,7 +60,7 @@ def send_line(msg):
     requests.post(url, headers=headers, json=payload)
 
 if __name__ == "__main__":
-    dis = get_real_deal()
-    con = get_investor_conf()
-    now = datetime.now().strftime('%Y/%m/%d')
-    send_line(f"🚀 【台股偵測終極報表】 {now}\n\n{dis}{con}")
+    dis = get_clean_disposition()
+    con = get_investor_conf_robust()
+    now_date = datetime.now().strftime('%Y/%m/%d')
+    send_line(f"🚀 【台股偵測終極報表】 {now_date}\n\n{dis}{con}")
