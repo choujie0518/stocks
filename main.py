@@ -1,8 +1,9 @@
 import os
 import requests
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 
+# --- 讀取金鑰 ---
 LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
@@ -10,56 +11,61 @@ def send_line_push(message):
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_ACCESS_TOKEN}"}
     payload = {"to": USER_ID, "messages": [{"type": "text", "text": message}]}
-    requests.post(url, headers=headers, json=payload, timeout=15)
-
-def get_twse_data():
-    # 建立強效 Headers 偽裝成真人瀏覽器
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Referer': 'https://www.twse.com.tw/zh/page/announcement/notice.html'
-    }
-    
-    # 增加隨機參數避免緩存
-    ts = str(int(datetime.now().timestamp()))
-    notice_url = f"https://www.twse.com.tw/zh/api/noticeData?response=json&_={ts}"
-    punish_url = f"https://www.twse.com.tw/zh/api/punishData?response=json&_={ts}"
-    
-    report = "⚠️ 【證交所即時清單】\n"
-    
     try:
-        # 1. 抓取注意股
-        res_n = requests.get(notice_url, headers=headers, timeout=20).json()
-        if res_n.get('stat') == 'OK' and res_n.get('data'):
-            report += "📍 最新注意股:\n"
-            # 抓前 10 筆，這是證交所官網當下的最新內容
-            for i in res_n['data'][:10]:
-                report += f"• {i[1]} {i[2]}\n"
-        else:
-            report += "📍 證交所目前無新增注意股\n"
+        requests.post(url, headers=headers, json=payload, timeout=15)
+    except:
+        pass
 
-        # 2. 抓取處置股
-        res_p = requests.get(punish_url, headers=headers, timeout=20).json()
-        if res_p.get('stat') == 'OK' and res_p.get('data'):
-            report += "\n🚫 處置中標的:\n"
-            for i in res_p['data'][:8]:
-                report += f"• {i[1]} {i[2]} ({i[3]})\n"
+def get_stable_data():
+    today_dt = datetime.now()
+    # 抓取範圍擴大到 10 天，確保即便更新延遲也一定有資料
+    start_date = (today_dt - timedelta(days=10)).strftime('%Y-%m-%d')
+    today = today_dt.strftime('%Y-%m-%d')
+    
+    base_url = "https://api.finmindtrade.com/api/v4/data"
+    report = "⚠️ 【台股注意/處置最新清單】\n"
+    
+    # 1. 注意股：抓取最近一次的完整公告
+    try:
+        res = requests.get(f"{base_url}?dataset=TaiwanStockNotice&start_date={start_date}", timeout=25).json()
+        if res.get('data'):
+            df = pd.DataFrame(res['data'])
+            last_date = df['date'].max() # 找到資料庫裡最新的公告日
+            df_last = df[df['date'] == last_date]
+            report += f"\n📍 注意股 (公告日:{last_date}):\n"
+            for _, row in df_last.head(15).iterrows():
+                report += f"• {row['stock_id']} {row.get('stock_name', '')}\n"
         else:
-            report += "\n🚫 目前無處置中股票\n"
-            
-    except Exception as e:
-        report += f"\n❌ 證交所連線超時，請稍後再試"
-        
+            report += "\n📍 注意股: 查無近期公告\n"
+    except:
+        report += "\n📍 注意股: 資料擷取暫時中斷\n"
+
+    # 2. 處置股：抓取目前生效中的清單
+    try:
+        res = requests.get(f"{base_url}?dataset=TaiwanStockDisposition&start_date={start_date}", timeout=25).json()
+        if res.get('data'):
+            df_p = pd.DataFrame(res['data'])
+            # 過濾出到今天為止還沒結束處置的股票
+            active = df_p[df_p['end_date'] >= today].sort_values('end_date')
+            if not active.empty:
+                report += "\n🚫 處置中 (生效期內):\n"
+                for _, row in active.iterrows():
+                    report += f"• {row['stock_id']} (至 {row['end_date']})\n"
+            else:
+                report += "\n🚫 處置股: 目前無生效標的\n"
+        else:
+            report += "\n🚫 處置股: 查無資料\n"
+    except:
+        report += "\n🚫 處置股: 連線異常\n"
+
     return report
 
 def main():
-    if not LINE_ACCESS_TOKEN or not USER_ID:
-        return
-
-    # 組合最終訊息
-    twse_content = get_twse_data()
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+    if not LINE_ACCESS_TOKEN or not USER_ID: return
     
-    final_msg = f"💡 台股即時報 ({now_str})\n\n{twse_content}\n\n數據源：證交所官網直連"
+    content = get_stable_data()
+    now_str = datetime.now().strftime('%m/%d %H:%M')
+    final_msg = f"💡 台股早報 ({now_str})\n\n{content}\n數據源：FinMind 穩定供應"
     
     send_line_push(final_msg)
 
