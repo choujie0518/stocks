@@ -6,65 +6,72 @@ from datetime import datetime
 LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
-def get_stock_report(url, title, type_filter):
+def get_disposition_stocks():
+    """抓取處置股及其正確起訖日期"""
+    url = "https://www.twse.com.tw/zh/announcement/punish.html" # 證交所官方
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     try:
         res = requests.get(url, headers=headers, timeout=20)
-        res.encoding = 'utf-8'
         soup = BeautifulSoup(res.text, 'html.parser')
+        # 尋找表格內容
         table = soup.find('table')
-        if not table: return f"【{title}】\n  (今日官網尚未更新)\n"
+        if not table: return "🚫 【今日處置股】\n  (今日暫無處置標的或尚未更新)\n"
         
         rows = table.find_all('tr')
-        content = f"【{title}】\n"
+        report = "🚫 【今日處置股名單】\n"
         count = 0
-        for row in rows[1:]:
+        for row in rows[1:]: # 跳過標題
             cols = row.find_all('td')
-            # 根據 HiStock 頁面邏輯，過濾注意(m=1)或處置(預設)
-            if len(cols) >= 2:
-                stock_info = cols[0].get_text(strip=True)
-                date_info = cols[1].get_text(strip=True)
-                content += f"• {stock_info}\n  📅 {date_info}\n"
+            if len(cols) >= 3:
+                date_range = cols[0].get_text(strip=True) # 起訖日期
+                stock_info = cols[1].get_text(strip=True) + " " + cols[2].get_text(strip=True) # 代號+名稱
+                report += f"• {stock_info}\n  ⏳ {date_range}\n"
                 count += 1
-            if count >= 10: break # 避免訊息過長
-        return content + "\n"
+            if count >= 15: break # 限制長度
+        return report + "\n"
     except:
-        return f"❌ {title}連線異常\n"
+        return "❌ 處置股抓取失敗，請檢查網路。\n"
 
 def get_investor_conference():
-    # 專門爬取法說會行事曆
-    url = "https://histock.tw/stock/mktcalendar.aspx"
+    """抓取今日法說會 (切換至 Yahoo 財經源，資訊較即時)"""
+    url = "https://tw.stock.yahoo.com/calendar/conference"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         res = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(res.text, 'html.parser')
-        # 尋找當天日期標籤下的公司
-        today_str = datetime.now().strftime('%m/%d')
-        report = "🎙️ 【今日法說會重點】\n"
-        items = soup.find_all('div', class_='cal-item') # 假設結構
+        # 抓取清單項
+        items = soup.find_all('li', class_='List(n)')
+        report = "🎙️ 【今日法說會資訊】\n"
         found = False
         for item in items:
-            if today_str in item.get_text():
-                report += f"• {item.get_text(strip=True)}\n"
+            text = item.get_text(strip=True)
+            # 簡單過濾代號與名稱
+            report += f"• {text}\n"
+            found = True
+        
+        if not found:
+            # 備用方案：抓取表格類型的法說
+            titles = soup.select('div[class*="StyledTitle"]')
+            for t in titles:
+                report += f"• {t.get_text(strip=True)}\n"
                 found = True
-        return report if found else "🎙️ 【今日法說會】\n  (今日暫無排定法說)\n"
+                
+        return report if found else "🎙️ 【今日法說會】\n  (今日暫無公開法說資訊)\n"
     except:
-        return "🎙️ 【今日法說會】\n  (抓取失敗，請檢查網路)\n"
+        return "🎙️ 【今日法說會】\n  (抓取異常)\n"
 
 def send_line(msg):
+    if not LINE_TOKEN or not USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
     payload = {"to": USER_ID, "messages": [{"type": "text", "text": msg}]}
     requests.post(url, headers=headers, json=payload)
 
 if __name__ == "__main__":
-    # 處置股
-    dis_report = get_stock_report("https://histock.tw/stock/public.aspx", "🚫 今日處置股", "dis")
-    # 注意股 (參數 m=1)
-    not_report = get_stock_report("https://histock.tw/stock/public.aspx?m=1", "⚠️ 今日注意股", "not")
-    # 法說會
+    dis_report = get_disposition_stocks()
     con_report = get_investor_conference()
     
-    now = datetime.now().strftime('%Y/%m/%d %H:%M')
-    final_msg = f"🚀 台股自動化報表 ({now})\n\n{dis_report}{not_report}{con_report}"
+    # 台灣時間顯示
+    now = datetime.now().strftime('%Y/%m/%d')
+    final_msg = f"🚀 台股自動報表 ({now})\n\n{dis_report}{con_report}"
     send_line(final_msg)
