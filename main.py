@@ -5,53 +5,63 @@ import datetime
 LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
-def get_mapping():
-    """從股價 API 獲取代號/名稱對照，這比單純抓處置股 API 穩定得多"""
-    mapping = {}
+def get_stock_name(code):
+    """直接呼叫證交所基本資料 API，保證代號轉名稱正確"""
     try:
-        # 使用證交所每日收盤行情作為名稱庫，這是不會變動的穩定源
-        url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_AVG_ALL"
+        # 使用證交所 Open Data，這對自動化程式最友善
+        url = f"https://openapi.twse.com.tw/v1/openapi/basic/t187ap03_L?stock_id={code}"
         res = requests.get(url, timeout=10)
-        for item in res.json():
-            mapping[item['Code']] = item['Name']
-    except: pass
-    return mapping
+        data = res.json()
+        if data and len(data) > 0:
+            return data[0].get('Abbreviation', '未知')
+    except:
+        pass
+    return "查詢中"
 
-def get_data():
-    names = get_mapping()
+def get_report():
     # 1. 抓取處置股
-    dis_msg = "🚫 【今日處置股名單】\n"
+    dis_report = "🚫 【今日處置股名單】\n"
     try:
-        res = requests.get("https://www.twse.com.tw/rwd/zh/announcement/punish?response=json", timeout=10)
-        data = res.json().get('data', [])
-        stocks = {}
-        for row in data:
+        res = requests.get("https://www.twse.com.tw/rwd/zh/announcement/punish?response=json", timeout=15)
+        raw_data = res.json().get('data', [])
+        
+        unique_stocks = {}
+        for row in raw_data:
             code = str(row[1]).strip()
-            # 強制對照名稱，若找不到則顯示原始欄位
-            name = names.get(code, str(row[2]).strip())
-            # 確保不會抓到「第一次處置」這種廢話
-            if "處置" in name or "撮合" in name:
-                name = names.get(code, "未知")
-            stocks[code] = f"• {code} {name}\n  ⏳ {row[0]}"
+            # 只要代號，名稱我們自己去另一個 API 查，確保不被「第一次處置」誤導
+            if code not in unique_stocks:
+                name = get_stock_name(code)
+                unique_stocks[code] = f"• {code} {name}\n  ⏳ {row[0]}"
         
-        if not stocks: dis_msg += "  (今日暫無標的)\n"
-        else: dis_msg += "\n".join([stocks[k] for k in sorted(stocks.keys())])
-    except: dis_msg += "  (處置股讀取失敗)\n"
+        if not unique_stocks:
+            dis_report += "  (今日暫無處置標的)\n"
+        else:
+            dis_report += "\n".join([unique_stocks[k] for k in sorted(unique_stocks.keys())])
+    except:
+        dis_report += "  (處置股連線異常)\n"
 
-    # 2. 抓取法說會 (改用對爬蟲最友善的來源)
-    con_msg = "\n\n🎙️ 【今日法說會資訊】\n"
+    # 2. 抓取法說會 (改用證交所法說會公告 API)
+    con_report = "\n\n🎙️ 【今日法說會資訊】\n"
     try:
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
-        # 改用 Anue API 的穩定接口
-        res = requests.get(f"https://api.cnyes.com/media/api/v1/news/calendar?date={today}", timeout=10)
-        events = res.json().get('data', {}).get('items', [])
-        found = [f"• {e['title']}" for e in events if '法說' in e.get('title', '')]
+        # 這是證交所官方法說會公告源
+        url = "https://openapi.twse.com.tw/v1/mops/t100sb02_1"
+        res = requests.get(url, timeout=15)
+        today = datetime.datetime.now().strftime("%Y%m%d")
         
-        if not found: con_msg += "  (今日暫無公開法說)\n"
-        else: con_msg += "\n".join(found)
-    except: con_msg += "  (法說會暫時無法連線)\n"
-    
-    return dis_msg + con_msg
+        found = []
+        for item in res.json():
+            # 匹配今天日期的公告
+            if item.get('MeetDate') == today:
+                found.append(f"• {item.get('Code')} {item.get('Name')}")
+        
+        if not found:
+            con_report += "  (今日官方暫無登記法說)\n"
+        else:
+            con_report += "\n".join(list(set(found)))
+    except:
+        con_report += "  (法說會資料讀取失敗)\n"
+        
+    return dis_report + con_report
 
 def send_line(msg):
     if not LINE_TOKEN or not USER_ID: return
@@ -60,6 +70,6 @@ def send_line(msg):
     requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=payload)
 
 if __name__ == "__main__":
-    report = get_data()
-    now = datetime.datetime.now().strftime('%Y/%m/%d')
-    send_line(f"🚀 【台股精準偵測】{now}\n\n{report}")
+    content = get_report()
+    date_str = datetime.datetime.now().strftime('%Y/%m/%d')
+    send_line(f"🚀 【台股偵測終極報表】{date_str}\n\n{content}")
