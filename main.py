@@ -3,8 +3,8 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 
-LINE_TOKEN = os.getenv("+2CR+GgiuG6KeEQunMSDhuOhRgh4YUvY4o6p06aTOGWXUlAel96y1kCKZDe40uHzJJleppcbd00EOzV7HuXKU6jhzSJoHKk117MZc/HC7TOrakfyuNcukMtI9mzhfkxw6W+tn/HdaAl0iBWg4tFYRwdB04t89/1O/w1cDnyilFU=")
-USER_ID = os.getenv("U65997d63aa5d6021411de4c8e1e9e9c0")
+LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
+USER_ID = os.getenv("USER_ID")
 
 def get_real_data():
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
