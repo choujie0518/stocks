@@ -4,8 +4,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 # --- 環境變數 ---
-LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
-USER_ID = os.getenv("USER_ID")
+LINE_TOKEN = os.getenv("+2CR+GgiuG6KeEQunMSDhuOhRgh4YUvY4o6p06aTOGWXUlAel96y1kCKZDe40uHzJJleppcbd00EOzV7HuXKU6jhzSJoHKk117MZc/HC7TOrakfyuNcukMtI9mzhfkxw6W+tn/HdaAl0iBWg4tFYRwdB04t89/1O/w1cDnyilFU=")
+USER_ID = os.getenv("U65997d63aa5d6021411de4c8e1e9e9c0")
 
 def send_line(msg):
     url = "https://api.line.me/v2/bot/message/push"
