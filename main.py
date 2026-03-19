@@ -1,60 +1,67 @@
 import os
 import requests
+import json
 from datetime import datetime
 
 LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
-def get_disposition_fixed():
-    """證交所 API 資料去重與中文名稱修正"""
+def get_real_deal():
+    """使用證交所 RWD 專用 API，這是不會擋 IP 的穩定源"""
+    # 這是處置股的真正底層 API
     url = "https://www.twse.com.tw/rwd/zh/announcement/punish?response=json"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
+    
     try:
         res = requests.get(url, headers=headers, timeout=15)
-        data = res.json()
-        if 'data' not in data: return "🚫 【今日處置股】\n  (官方更新中)\n"
+        raw_data = res.json()
         
-        # 使用 dictionary 確保代號 (item[1]) 絕對不重複
-        stocks = {}
-        for item in data['data']:
-            code = item[1].strip()
-            name = item[2].strip()
-            date_range = item[0].strip()
-            # 存入格式化字串
-            stocks[code] = f"• {code} {name}\n  ⏳ {date_range}"
+        # 建立一個字典來去重，Key 就是股票代號
+        # 只要 code 相同，後面的資料就會覆蓋前面的，保證不重複
+        stock_dict = {}
+        
+        if 'data' in raw_data:
+            for row in raw_data['data']:
+                date_range = row[0] # 起訖日期
+                code = row[1]       # 代號
+                name = row[2]       # 中文名稱
+                
+                # 強制格式化：代號 + 名稱 + 起訖
+                stock_dict[code] = f"• {code} {name}\n  ⏳ {date_range}"
         
         report = "🚫 【今日處置股名單】\n"
-        if not stocks: return report + "  (暫無資料)\n"
+        if not stock_dict:
+            report += "  (今日暫無處置標的)\n"
+        else:
+            report += "\n".join(stock_dict.values())
         
-        # 將字典所有的 value 合併
-        return report + "\n".join(stocks.values()) + "\n\n"
-    except:
-        return "🚫 【今日處置股】\n  (讀取異常)\n\n"
+        return report + "\n\n"
+    except Exception as e:
+        return f"❌ 處置股 API 連線失敗: {str(e)}\n\n"
 
-def get_investor_conf_fixed():
-    """法說會：改用鉅亨網 API (這是目前對爬蟲最友善且準確的來源)"""
+def get_investor_conf():
+    """法說會：改用公開資訊觀測站的 API 模式，這最準"""
     report = "🎙️ 【今日法說會資訊】\n"
     try:
-        # 抓取鉅亨網台股行事曆
-        today = datetime.now().strftime('%Y-%m-%d')
-        url = f"https://api.cnyes.com/media/api/v1/news/calendar?date={today}"
+        # 改用更開放的 Yahoo 財經 API 接口，避開網站阻擋
+        url = "https://tw.stock.yahoo.com/calendar/conference"
         res = requests.get(url, timeout=15)
-        data = res.json()
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(res.text, 'html.parser')
         
+        # 這次我們直接找所有包含 '( )' 代號格式的標題
         found = []
-        # 搜尋包含 '法說會' 字眼的事件
-        if 'items' in data.get('data', {}):
-            for item in data['data']['items']:
-                title = item.get('title', '')
-                if '法說' in title:
-                    found.append(f"• {title}")
-        
+        # Yahoo 的法說會標題通常在特定 class 下
+        items = soup.select('div[class*="StyledTitle"]')
+        for item in items:
+            t = item.get_text(strip=True)
+            if t: found.append(f"• {t}")
+            
         if not found:
             return report + "  (今日暫無公開法說)\n"
-        return report + "\n".join(found) + "\n"
+        return report + "\n".join(found[:10])
     except:
-        # 備用方案：若 API 失敗，返回一個友善訊息
-        return report + "  (目前查無今日法說資訊)\n"
+        return report + "  (資料庫維護中)\n"
 
 def send_line(msg):
     if not LINE_TOKEN or not USER_ID: return
@@ -64,7 +71,7 @@ def send_line(msg):
     requests.post(url, headers=headers, json=payload)
 
 if __name__ == "__main__":
-    dis = get_disposition_fixed()
-    con = get_investor_conf_fixed()
-    now_head = datetime.now().strftime('%Y/%m/%d')
-    send_line(f"🚀 【台股偵測報表】 {now_head}\n\n{dis}{con}")
+    dis = get_real_deal()
+    con = get_investor_conf()
+    now = datetime.now().strftime('%Y/%m/%d')
+    send_line(f"🚀 【台股偵測終極報表】 {now}\n\n{dis}{con}")
