@@ -6,39 +6,42 @@ from datetime import datetime
 LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
-def get_real_data():
+def get_data(url, title_name):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    url = "https://histock.tw/stock/public.aspx"
     try:
         res = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(res.text, 'html.parser')
         table = soup.find('table')
-        if not table: return "⚠️ 目前網站數據結構有變，請檢查來源。"
+        if not table: return f"⚠️ {title_name}: 暫無資料\n"
+        
         rows = table.find_all('tr')
-        report = "🚫 【台股最新處置股】\n"
-        for row in rows[1:11]: # 取前 10 筆
+        report = f"【{title_name}】\n"
+        # 抓取前 8 筆確保訊息不會過長被 LINE 擋掉
+        for row in rows[1:9]: 
             cols = row.find_all('td')
             if len(cols) >= 2:
-                report += f"• {cols[0].get_text(strip=True)}\n  ⏳ {cols[1].get_text(strip=True)}\n"
-        return report
-    except Exception as e:
-        return f"❌ 數據抓取失敗: {str(e)}"
+                stock = cols[0].get_text(strip=True) # 代號名稱
+                info = cols[1].get_text(strip=True)  # 日期或說明
+                report += f"• {stock}\n  📅 {info}\n"
+        return report + "\n"
+    except:
+        return f"❌ {title_name}抓取失敗\n"
 
 def send_line(msg):
-    # 這裡加入偵錯檢查
-    if not LINE_TOKEN or not USER_ID:
-        print(f"❌ 錯誤：找不到環境變數！TOKEN長度: {len(str(LINE_TOKEN))}, ID長度: {len(str(USER_ID))}")
-        return
-
+    if not LINE_TOKEN or not USER_ID: return
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
     payload = {"to": USER_ID, "messages": [{"type": "text", "text": msg}]}
-    
-    response = requests.post(url, headers=headers, json=payload)
-    # 把 LINE 的回覆印出來
-    print(f"📡 LINE 伺服器回覆: {response.status_code} - {response.text}")
+    requests.post(url, headers=headers, json=payload)
 
 if __name__ == "__main__":
-    content = get_real_data()
+    # 1. 處置股頁面
+    disposition = get_data("https://histock.tw/stock/public.aspx", "🚫 今日處置股")
+    # 2. 注意股頁面
+    notice = get_data("https://histock.tw/stock/public.aspx?m=1", "⚠️ 今日注意股")
+    # 3. 法說會頁面 (從 HiStock 財經行事曆抓取)
+    investor = get_data("https://histock.tw/stock/mktcalendar.aspx", "🎙️ 今日法說會")
+    
     now = datetime.now().strftime('%m/%d %H:%M')
-    send_line(f"💡 自動報報 ({now})\n\n{content}")
+    final_report = f"💡 台股自動化報表 ({now})\n\n{disposition}{notice}{investor}"
+    send_line(final_report)
