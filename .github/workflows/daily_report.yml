@@ -2,9 +2,8 @@ name: Daily Stock Report
 
 on:
   schedule:
-    # 台灣時間 08:10 (UTC 00:10)
     - cron: '10 0 * * 1-5'
-  workflow_dispatch: # 手動測試按鈕
+  workflow_dispatch:
 
 jobs:
   build:
@@ -24,8 +23,7 @@ jobs:
 
       - name: Run script
         env:
-          # 注意：這裡要填的是你在 GitHub Settings 設的「變數名稱」
-          # 而不是直接把那串長長的 Token 貼在這裡！
+          # 這裡必須這樣寫，它才會去你的 Settings 抓金鑰
           LINE_ACCESS_TOKEN: ${{ secrets.LINE_ACCESS_TOKEN }}
           USER_ID: ${{ secrets.USER_ID }}
         run: python main.py
