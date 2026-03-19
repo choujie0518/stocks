@@ -1,57 +1,67 @@
 import os
 import requests
+from bs4 import BeautifulSoup
 import datetime
 
 LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
 def get_report():
-    # --- 1. 處置股 (重新調整欄位抓取邏輯) ---
+    # 擬人化 Header，防止被 Yahoo 或證交所封鎖
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+
+    # --- 1. 處置股 (不再單純去重，確保列出所有日期) ---
     dis_report = "🚫 【今日處置股名單】\n"
     try:
-        res = requests.get("https://www.twse.com.tw/rwd/zh/announcement/punish?response=json", timeout=15)
+        res = requests.get("https://www.twse.com.tw/rwd/zh/announcement/punish?response=json", headers=headers, timeout=15)
         raw_data = res.json().get('data', [])
-        stocks = {}
+        
+        unique_items = []
+        seen = set()
+        
         for row in raw_data:
-            code = str(row[1]).strip()
             date_info = str(row[0]).strip()
-            
-            # 遍歷這一行的所有欄位，找「不含數字」且「不是廢話」的欄位當名稱
-            name = "未知名稱"
+            code = str(row[1]).strip()
+            # 找名稱：遍歷欄位，找 2-5 個字且不含「處置」的純中文
+            name = "查詢中"
             for cell in row:
                 c_str = str(cell).strip()
-                # 排除掉日期、代號、以及包含處置說名的長句子
-                if len(c_str) >= 2 and len(c_str) <= 6 and not any(char.isdigit() for char in c_str):
-                    if "處置" not in c_str and "撮合" not in c_str:
-                        name = c_str
-                        break
+                if 2 <= len(c_str) <= 5 and not any(char.isdigit() for char in c_str) and "處置" not in c_str:
+                    name = c_str
+                    break
             
-            # 以 code 為 Key 強制去重，3054 絕對只會出現一次
-            stocks[code] = f"• {code} {name}\n  ⏳ {date_info}"
+            # 使用「日期+代號」作為唯一標識，避免漏掉同一股票不同時段的處置
+            identity = f"{date_info}_{code}"
+            if identity not in seen:
+                unique_items.append(f"• {code} {name}\n  ⏳ {date_info}")
+                seen.add(identity)
         
-        if not stocks: dis_report += "  (今日暫無標的)\n"
-        else: dis_report += "\n".join([stocks[k] for k in sorted(stocks.keys())])
-    except: dis_report += "  (處置股讀取失敗)\n"
+        dis_report += "\n".join(unique_items) if unique_items else "  (今日暫無處置標的)\n"
+    except:
+        dis_report += "  (處置股讀取失敗)\n"
 
-    # --- 2. 法說會 (同步修正) ---
+    # --- 2. 法說會 (直接從 Yahoo 股市撈取) ---
     con_report = "\n\n🎙️ 【今日法說會資訊】\n"
     try:
-        # 改用更直覺的 MOPS 彙整源
-        url = "https://openapi.twse.com.tw/v1/mops/t100sb02_1"
-        res = requests.get(url, timeout=15)
-        today_ymd = datetime.datetime.now().strftime("%Y%m%d")
-        today_roc = str(datetime.datetime.now().year - 1911) + datetime.datetime.now().strftime("%m%d")
+        # Yahoo 股市法說會行事曆
+        yahoo_url = "https://tw.stock.yahoo.com/calendar/conference"
+        res = requests.get(yahoo_url, headers=headers, timeout=15)
+        soup = BeautifulSoup(res.text, 'html.parser')
         
-        found = []
-        for item in res.json():
-            m_date = str(item.get('MeetDate', '')).replace('/', '')
-            # 同時比對西元與民國日期
-            if m_date == today_ymd or m_date == today_roc:
-                found.append(f"• {item.get('Code')} {item.get('Name')}")
+        # Yahoo 的結構：尋找包含股票代號括號的文字 (例如：台積電(2330))
+        found_list = []
+        # 抓取頁面中所有看起來像公司名+代號的標籤
+        for item in soup.select('div[class*="StyledTableCell"]'):
+            text = item.get_text(strip=True)
+            if "(" in text and ")" in text and any(char.isdigit() for char in text):
+                found_list.append(f"• {text}")
         
-        if not found: con_report += "  (今日官方暫無登記法說)\n"
-        else: con_report += "\n".join(sorted(list(set(found))))
-    except: con_report += "  (連線失敗)\n"
+        # 去重並保留前 15 筆
+        con_report += "\n".join(list(dict.fromkeys(found_list))[:15]) if found_list else "  (今日 Yahoo 暫無公開資訊)\n"
+    except:
+        con_report += "  (Yahoo 連線受阻)\n"
         
     return dis_report + con_report
 
@@ -62,6 +72,6 @@ def send_line(msg):
     requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=payload)
 
 if __name__ == "__main__":
-    content = get_report()
-    now = datetime.datetime.now().strftime('%Y/%m/%d')
-    send_line(f"🚀 【台股偵測】{now}\n\n{content}")
+    report_content = get_report()
+    today_str = datetime.datetime.now().strftime('%Y/%m/%d')
+    send_line(f"🚀 【台股偵測】{today_str}\n\n{report_content}")
