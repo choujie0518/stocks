@@ -4,23 +4,28 @@ on:
   schedule:
     # 台灣時間 08:10 (UTC 00:10)
     - cron: '10 0 * * 1-5'
-  workflow_dispatch: # 這是重點：讓你可以手動按按鈕測試
+  workflow_dispatch: # 手動測試按鈕
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+          
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests pandas beautifulsoup4
-        run: pip install requests pandas
+          pip install requests pandas beautifulsoup4 lxml
+
       - name: Run script
         env:
-          LINE_ACCESS_TOKEN: ${{ secrets.+2CR+GgiuG6KeEQunMSDhuOhRgh4YUvY4o6p06aTOGWXUlAel96y1kCKZDe40uHzJJleppcbd00EOzV7HuXKU6jhzSJoHKk117MZc/HC7TOrakfyuNcukMtI9mzhfkxw6W+tn/HdaAl0iBWg4tFYRwdB04t89/1O/w1cDnyilFU= }}
-          USER_ID: ${{ secrets.U65997d63aa5d6021411de4c8e1e9e9c0 }}
+          # 注意：這裡要填的是你在 GitHub Settings 設的「變數名稱」
+          # 而不是直接把那串長長的 Token 貼在這裡！
+          LINE_ACCESS_TOKEN: ${{ secrets.LINE_ACCESS_TOKEN }}
+          USER_ID: ${{ secrets.USER_ID }}
         run: python main.py
