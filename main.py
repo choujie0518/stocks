@@ -1,76 +1,74 @@
 import os
 import requests
-import re
+import json
 from datetime import datetime
 
 LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
-def get_disposition_final_fix():
-    """強制過濾與去重邏輯"""
+def get_stock_names():
+    """預先抓取全台股名稱對照表，避免 API 欄位亂跳"""
+    names = {}
+    try:
+        # 抓取證交所代號對照 JSON
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_AVG_ALL", timeout=10)
+        for item in res.json():
+            names[item['Code']] = item['Name']
+    except:
+        pass
+    return names
+
+def get_disposition_final():
+    """強行匹配名稱與去重"""
+    name_dict = get_stock_names()
     url = "https://www.twse.com.tw/rwd/zh/announcement/punish?response=json"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    
     try:
         res = requests.get(url, headers=headers, timeout=15)
         data = res.json().get('data', [])
         
-        # 建立一個以『代號』為 key 的字典，強制去重
         result_map = {}
-        
         for row in data:
-            # 遍歷這一行的所有欄位，找出長度為 4 的數字(代號)和包含 115/ 的日期
-            code = ""
-            name = ""
-            date_range = ""
+            date_range = str(row[0])
+            code = str(row[1])
+            # 優先從我們的字典找中文名，找不到再看 API 欄位
+            name = name_dict.get(code, "未知名稱")
             
-            for cell in row:
-                cell_str = str(cell).strip()
-                # 判斷是否為 4 位數字代號 (例如 6715)
-                if re.fullmatch(r'\d{4}', cell_str):
-                    code = cell_str
-                # 判斷是否為中文名稱 (通常長度 2-6 且非數字)
-                elif 2 <= len(cell_str) <= 8 and not any(c.isdigit() for c in cell_str):
-                    name = cell_str
-                # 判斷是否包含起訖日期 (例如 115/03/17)
-                elif '115/' in cell_str:
-                    date_range = cell_str
-            
-            if code:
-                # 存入字典。如果 6715 再次出現，會直接覆蓋，保證唯一性
-                result_map[code] = {
-                    "name": name if name else "名稱讀取中",
-                    "date": date_range if date_range else "日期未標註"
-                }
-        
-        if not result_map:
-            return "🚫 【今日處置股名單】\n  (目前無資料)\n"
+            # 以 code 為 Key 強制去重
+            result_map[code] = f"• {code} {name}\n  ⏳ {date_range}"
             
         report = "🚫 【今日處置股名單】\n"
-        # 按照代號排序輸出
-        for c in sorted(result_map.keys()):
-            info = result_map[c]
-            report += f"• {c} {info['name']}\n  ⏳ {info['date']}\n"
-        return report + "\n"
+        if not result_map: return report + "  (今日暫無標的)\n"
+        
+        # 排序並組合
+        sorted_keys = sorted(result_map.keys())
+        return report + "\n".join([result_map[k] for k in sorted_keys]) + "\n\n"
     except:
-        return "🚫 【處置股】資料讀取失敗\n\n"
+        return "🚫 【今日處置股】\n  (讀取異常)\n\n"
 
-def get_investor_conf_final():
-    """法說會：改用最暴力的 Yahoo 財經名單抓取"""
+def get_official_conferences():
+    """改用證交所官方新聞 API 抓取法說會關鍵字"""
     report = "🎙️ 【今日法說會資訊】\n"
     try:
-        # 直接抓取彙整頁面
-        url = "https://tw.stock.yahoo.com/calendar/conference"
+        # 這是證交所每日重大訊息/法說會的 API
+        url = "https://openapi.twse.com.tw/v1/mops/t100sb02_1"
         res = requests.get(url, timeout=15)
-        # 用正則表達式直接從 HTML 原始碼中撈出 (股票代號)
-        # 這是為了避開網頁標籤被封鎖的問題
-        matches = re.findall(r'[\u4e00-\u9fa5]+\(\d{4}\)', res.text)
+        today = datetime.now().strftime('%Y%m%d')
         
-        found = sorted(list(set(matches))) # 去重並排序
+        found = []
+        for item in res.json():
+            # 判斷日期是否為今日，且包含法說會關鍵字
+            if item.get('MeetDate') == today or item.get('AggregationDate') == today:
+                code = item.get('Code', '')
+                name = item.get('Name', '')
+                found.append(f"• {code} {name}")
+        
         if not found:
-            return report + "  (今日暫無公開法說)\n"
-        return report + "\n".join([f"• {m}" for m in found[:15]])
+            return report + "  (今日官方暫無登記法說)\n"
+        return report + "\n".join(list(set(found))) # 去重
     except:
-        return report + "  (連線異常)\n"
+        return report + "  (資料源連線中)\n"
 
 def send_line(msg):
     if not LINE_TOKEN or not USER_ID: return
@@ -80,6 +78,7 @@ def send_line(msg):
     requests.post(url, headers=headers, json=payload)
 
 if __name__ == "__main__":
-    content = get_disposition_final_fix() + get_investor_conf_final()
-    now_str = datetime.now().strftime('%Y/%m/%d')
-    send_line(f"🚀 【台股報表】 {now_str}\n\n{content}")
+    dis = get_disposition_final()
+    con = get_official_conferences()
+    now = datetime.now().strftime('%Y/%m/%d')
+    send_line(f"🚀 【台股精準報表】 {now}\n\n{dis}{con}")
