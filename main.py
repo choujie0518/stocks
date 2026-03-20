@@ -2,61 +2,58 @@ import os
 import requests
 import datetime
 
-# 從 GitHub Secrets 讀取
 FINMIND_TOKEN = os.getenv("FINMIND_API_TOKEN")
 LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
-def get_finmind_data(dataset, data_id=None):
+def get_finmind_data(dataset, days_back=0):
+    """取得資料，若當天沒資料可調整回溯天數"""
     url = "https://api.finmindtrade.com/api/v4/data"
+    # 計算日期：今天扣除 days_back 天
+    target_date = (datetime.datetime.now() - datetime.timedelta(days=days_back)).strftime("%Y-%m-%d")
+    
     params = {
         "dataset": dataset,
-        "token": FINMIND_TOKEN
+        "token": FINMIND_TOKEN,
+        "start_date": target_date
     }
-    if data_id:
-        params["data_id"] = data_id
-    
-    # 取得今天日期
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    params["start_date"] = today
     
     try:
         res = requests.get(url, params=params, timeout=20)
-        return res.json().get("data", [])
+        data = res.json().get("data", [])
+        return data, target_date
     except:
-        return []
+        return [], target_date
 
 def get_report():
-    # 1. 處置股 (從 TaiwanStockPrice 檢查處置狀態或公告)
-    # 註：FinMind 的處置資訊通常在 'TaiwanStockPrice' 的 'remark' 或是專門的 'TaiwanStockAnnouncement'
-    report = "🚫 【今日處置股名單】\n"
+    report = ""
     
-    # 這裡我們用最準的「公告」數據集
-    announcements = get_finmind_data("TaiwanStockAnnouncement")
-    
-    found_dis = False
-    for item in announcements:
-        content = item.get("type", "")
-        if "處置" in content:
-            code = item.get("stock_id", "")
-            date = item.get("date", "")
-            report += f"• {code} (公告日: {date})\n"
-            found_dis = True
-            
-    if not found_dis:
-        report += "  (今日 API 尚未更新處置公告)\n"
-
-    # 2. 法說會 (從股東大會/法說會數據集抓取)
-    report += "\n🎙️ 【今日法說會資訊】\n"
-    conferences = get_finmind_data("TaiwanStockConference") # FinMind 專屬法說數據集
-    
-    if conferences:
-        for con in conferences:
-            report += f"• {con.get('stock_id')} {con.get('stock_name')}\n  ⏰ 時間: {con.get('start_time')}\n"
+    # --- 1. 處置股公告 (回溯抓取最新的一筆公告日) ---
+    dis_report = "🚫 【最新處置股公告】\n"
+    for i in range(5): # 最多往回找 5 天
+        data, date_str = get_finmind_data("TaiwanStockAnnouncement", days_back=i)
+        found = [item for item in data if "處置" in item.get("type", "")]
+        if found:
+            dis_report += f"📅 公告日期: {date_str}\n"
+            for item in found:
+                dis_report += f"• {item.get('stock_id')} (詳情請見官網)\n"
+            break
     else:
-        report += "  (今日暫無登記法說)\n"
+        dis_report += "  (近 5 日無新處置公告)\n"
+    
+    # --- 2. 法說會資訊 (回溯找最近有登記的一天) ---
+    conf_report = "\n🎙️ 【近期法說會資訊】\n"
+    for i in range(7): # 法說會通常較稀疏，往回找 7 天
+        data, date_str = get_finmind_data("TaiwanStockConference", days_back=i)
+        if data:
+            conf_report += f"📅 資訊日期: {date_str}\n"
+            for con in data:
+                conf_report += f"• {con.get('stock_id')} {con.get('stock_name')}\n"
+            break
+    else:
+        conf_report += "  (近期無登記法說資訊)\n"
         
-    return report
+    return dis_report + conf_report
 
 def send_line(msg):
     if not LINE_TOKEN or not USER_ID: return
@@ -66,8 +63,7 @@ def send_line(msg):
 
 if __name__ == "__main__":
     if not FINMIND_TOKEN:
-        send_line("❌ 錯誤：未設定 FINMIND_API_TOKEN")
+        send_line("❌ 錯誤：請在 Secrets 設定 FINMIND_API_TOKEN")
     else:
-        final_msg = get_report()
-        date_str = datetime.datetime.now().strftime('%Y/%m/%d')
-        send_line(f"🛡️ FinMind 專業報表 ({date_str})\n\n{final_msg}")
+        content = get_report()
+        send_line(f"🛡️ FinMind 智能回溯報表\n\n{content}")
