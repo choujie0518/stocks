@@ -1,65 +1,80 @@
 import os
+import time
 import requests
-import pandas as pd
 from datetime import datetime
-import io
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from webdriver_manager.chrome import ChromeDriverManager
 
 LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
-def get_disposition_data():
-    """直接從證交所網頁表格抓取，這份資料最完整，不會漏掉任何一支"""
-    url = "https://www.twse.com.tw/zh/announcement/punish.html" # 網頁版，比 API 豐富
-    api_url = "https://www.twse.com.tw/rwd/zh/announcement/punish?response=html"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
-    
-    try:
-        res = requests.get(api_url, headers=headers, timeout=15)
-        # 用 pandas 直接硬刷表格內容
-        dfs = pd.read_html(io.StringIO(res.text))
-        if not dfs: return "🚫 【今日處置股】\n  (今日暫無標的)\n"
-        
-        df = dfs[0]
-        # 證交所表格通常為：0:公佈日期, 1:證券代號, 2:證券名稱, 3:處置起訖日期...
-        # 我們只取 1, 2, 3 欄位
-        report = "🚫 【完整處置股清單】\n"
-        
-        # 強制去重：有些股票會重複公佈，我們以「代號+起訖日期」來確保唯一
-        df = df.drop_duplicates(subset=[df.columns[1], df.columns[3]])
-        
-        for _, row in df.iterrows():
-            code = str(row.iloc[1])
-            name = str(row.iloc[2])
-            period = str(row.iloc[3])
-            report += f"• {code} {name}\n  ⏳ {period}\n"
-        return report + "\n"
-    except Exception as e:
-        return f"🚫 【處置股】抓取異常: {str(e)}\n\n"
+def get_driver():
+    """設定 Headless Chrome 參數"""
+    chrome_options = Options()
+    chrome_options.add_argument('--headless') # 不開啟視窗
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    chrome_options.add_argument('--window-size=1920,1080')
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    return driver
 
-def get_conference_data():
-    """改用對 GitHub 環境最友善的數據源"""
-    report = "🎙️ 【今日法說會資訊】\n"
+def scrape_data():
+    driver = get_driver()
+    report = ""
+
+    # 1. 抓取證交所處置股 (直接看表格)
     try:
-        # 換成這組 API，這是專門提供給金融看盤軟體的，比較不會擋 IP
-        url = "https://openapi.twse.com.tw/v1/mops/t100sb02_1"
-        res = requests.get(url, timeout=15)
-        data = res.json()
+        driver.get("https://www.twse.com.tw/zh/announcement/punish.html")
+        time.sleep(5) # 等待 JavaScript 載入
         
-        # 取得今天日期 (民國格式，因為 API 裡面多用民國)
-        today_roc = f"{datetime.now().year - 1911}{datetime.now().strftime('%m%d')}"
-        today_std = datetime.now().strftime("%Y%m%d")
+        report += "🚫 【今日處置股名單】\n"
+        rows = driver.find_elements(By.CSS_SELECTOR, "#reports table tr")
         
-        found = []
-        for item in data:
-            m_date = str(item.get('MeetDate', '')).replace('/', '')
-            if m_date == today_roc or m_date == today_std:
-                found.append(f"• {item.get('Code')} {item.get('Name')}")
+        found_dis = False
+        # 跳過標題列
+        for row in rows[1:]:
+            cols = row.find_elements(By.TAG_NAME, "td")
+            if len(cols) >= 4:
+                code = cols[1].text.strip()
+                name = cols[2].text.strip()
+                date_range = cols[3].text.strip()
+                report += f"• {code} {name}\n  ⏳ {date_range}\n"
+                found_dis = True
         
-        if not found:
-            return report + "  (今日暫無官方登記法說)\n"
-        return report + "\n".join(list(set(found)))
-    except:
-        return report + "  (資料庫連線中)\n"
+        if not found_dis: report += "  (目前網頁查無處置標的)\n"
+    except Exception as e:
+        report += f"❌ 處置股抓取失敗: {str(e)}\n"
+
+    # 2. 抓取 Yahoo 股市法說會 (模擬真人瀏覽)
+    try:
+        driver.get("https://tw.stock.yahoo.com/calendar/conference")
+        time.sleep(5)
+        
+        report += "\n🎙️ 【今日法說會資訊】\n"
+        # 抓取 Yahoo 的 StyledTitle 區塊
+        items = driver.find_elements(By.CSS_SELECTOR, 'div[class*="StyledTitle"]')
+        
+        found_con = False
+        unique_con = set()
+        for item in items:
+            t = item.text.strip()
+            if t and "(" in t:
+                unique_con.add(t)
+                found_con = True
+        
+        if found_con:
+            for c in sorted(list(unique_con)):
+                report += f"• {c}\n"
+        else:
+            report += "  (今日暫無公開資訊)\n"
+    except Exception as e:
+        report += f"❌ 法說會抓取失敗: {str(e)}\n"
+
+    driver.quit()
+    return report
 
 def send_line(msg):
     if not LINE_TOKEN or not USER_ID: return
@@ -69,6 +84,6 @@ def send_line(msg):
     requests.post(url, headers=headers, json=payload)
 
 if __name__ == "__main__":
-    full_report = get_disposition_data() + get_conference_data()
+    final_report = scrape_data()
     now_str = datetime.now().strftime('%Y/%m/%d')
-    send_line(f"🚀 台股全效報表 ({now_str})\n\n{full_report}")
+    send_line(f"🚀 Selenium 自動偵測報表 ({now_str})\n\n{final_report}")
