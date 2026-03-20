@@ -24,65 +24,60 @@ def scrape_data():
     driver = get_driver()
     report = ""
 
-    # 1. 處置股：抓取證交所公告表格
+    # 1. 處置股：解析完整資訊
     try:
         driver.get("https://www.twse.com.tw/zh/announcement/punish.html")
-        # 等待表格出現
-        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#reports table")))
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#reports table")))
         time.sleep(3)
         
         report += "🚫 【今日處置股名單】\n"
         rows = driver.find_elements(By.CSS_SELECTOR, "#reports table tbody tr")
         
-        seen_items = set()
         count = 0
         for row in rows:
             cols = row.find_elements(By.TAG_NAME, "td")
             if len(cols) >= 4:
-                date = cols[0].text.strip()
+                # 把民國轉西元：115/03/19 -> 2026/03/19
+                raw_date = cols[0].text.strip()
+                date_parts = raw_date.split('/')
+                ad_date = f"{int(date_parts[0])+1911}/{date_parts[1]}/{date_parts[2]}"
+                
                 code = cols[1].text.strip()
                 name = cols[2].text.strip()
-                period = cols[3].text.strip()
+                period = cols[3].text.strip() # 這是「處置起訖期間」
                 
-                # 唯一標籤：代號+起訖日期，防止重複
-                identity = f"{code}_{period}"
-                if identity not in seen_items:
-                    report += f"• {code} {name}\n  ⏳ {period}\n"
-                    seen_items.add(identity)
-                    count += 1
+                report += f"• {code} {name}\n  📅 公告日: {ad_date}\n  ⏳ 區間: {period}\n"
+                count += 1
         
-        if count == 0: report += "  (目前查無生效中處置標的)\n"
-    except Exception as e:
-        report += "❌ 處置股連線異常 (TWSE)\n"
-
-    # 2. 法說會：直接抓證交所法人說明會公告
-    try:
-        # 這是證交所官網的法說會公告頁
-        driver.get("https://www.twse.com.tw/zh/education/corporate-day/list.html")
-        time.sleep(5)
-        
-        report += "\n🎙️ 【今日法說會資訊】\n"
-        # 抓取表格內的公司名稱
-        con_rows = driver.find_elements(By.CSS_SELECTOR, ".list-table tbody tr")
-        
-        found_con = []
-        today_str = datetime.now().strftime("%Y/%m/%d") # 格式如 2026/03/20
-        
-        for r in con_rows:
-            c = r.find_elements(By.TAG_NAME, "td")
-            if len(c) >= 3:
-                meeting_date = c[0].text.strip()
-                company_info = c[1].text.strip() # 格式通常是 "公司名(代號)"
-                if meeting_date == today_str:
-                    found_con.append(company_info)
-        
-        if found_con:
-            for item in sorted(list(set(found_con))):
-                report += f"• {item}\n"
-        else:
-            report += "  (今日暫無官方登記法說)\n"
+        if count == 0: report += "  (目前查無標的)\n"
     except:
-        report += "  (法說會資料暫時無法讀取)\n"
+        report += "❌ 處置股讀取失敗\n"
+
+    # 2. 法說會：改抓「公開資訊觀測站」的當日彙整，這最準
+    try:
+        # 這是最硬核的法說會資料源，不需要 UI 渲染
+        today_roc = f"{datetime.now().year - 1911}/{datetime.now().strftime('%m/%d')}"
+        # 建立一個查詢今天法說會的 Session
+        report += "\n🎙️ 【今日法說會資訊】\n"
+        
+        # 這裡我們換回穩定度最高的 OpenAPI
+        res = requests.get("https://openapi.twse.com.tw/v1/mops/t100sb02_1", timeout=15)
+        conf_data = res.json()
+        
+        found = []
+        target_date = datetime.now().strftime("%Y%m%d")
+        for item in conf_data:
+            # 只要日期對得上（移除斜線比對）
+            m_date = str(item.get('MeetDate', '')).replace('/', '')
+            if m_date == target_date:
+                found.append(f"• {item.get('Code')} {item.get('Name')}")
+        
+        if found:
+            report += "\n".join(list(set(found)))
+        else:
+            report += "  (今日官方暫無登記法說)\n"
+    except:
+        report += "  (法說會資料連線中)\n"
 
     driver.quit()
     return report
@@ -94,6 +89,5 @@ def send_line(msg):
     requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=payload)
 
 if __name__ == "__main__":
-    final_content = scrape_data()
-    now_date = datetime.now().strftime('%Y/%m/%d')
-    send_line(f"🚀 台股官網同步報表 ({now_date})\n\n{final_content}")
+    final_msg = scrape_data()
+    send_line(f"🚀 台股終極完整報表\n\n{final_msg}")
