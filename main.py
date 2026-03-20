@@ -2,67 +2,59 @@ import os
 import requests
 import datetime
 
+# 從 GitHub Secrets 讀取
+FINMIND_TOKEN = os.getenv("FINMIND_API_TOKEN")
 LINE_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 USER_ID = os.getenv("USER_ID")
 
-def get_report():
-    report = ""
-    # 取得今天日期 (西元與民國格式)
-    now = datetime.datetime.now()
-    today_std = now.strftime("%Y%m%d")
-    today_roc = f"{now.year - 1911}/{now.strftime('%m/%d')}"
+def get_finmind_data(dataset, data_id=None):
+    url = "https://api.finmindtrade.com/api/v4/data"
+    params = {
+        "dataset": dataset,
+        "token": FINMIND_TOKEN
+    }
+    if data_id:
+        params["data_id"] = data_id
     
-    # 1. 處置股 (直接從 Open Data 抓取)
-    report += "🚫 【今日處置股名單】\n"
+    # 取得今天日期
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    params["start_date"] = today
+    
     try:
-        # 證交所開放資料: 公布處置有價證券彙總表
-        url = "https://openapi.twse.com.tw/v1/announcement/punish"
-        res = requests.get(url, timeout=20)
-        data = res.json()
-        
-        seen = set()
-        count = 0
-        for item in data:
-            code = item.get('SecuritiesCode', '').strip()
-            name = item.get('SecuritiesName', '').strip()
-            start_date = item.get('StartDate', '').strip() # 格式: 20260319
-            end_date = item.get('EndDate', '').strip()     # 格式: 20260401
-            
-            # 只抓「目前還在處置中」的股票 (今天日期在區間內)
-            if start_date <= today_std <= end_date:
-                identity = f"{code}_{start_date}"
-                if identity not in seen:
-                    # 格式化日期顯示
-                    s = f"{start_date[:4]}/{start_date[4:6]}/{start_date[6:]}"
-                    e = f"{end_date[:4]}/{end_date[4:6]}/{end_date[6:]}"
-                    report += f"• {code} {name}\n  ⏳ 區間: {s} - {e}\n"
-                    seen.add(identity)
-                    count += 1
-        if count == 0: report += "  (今日暫無生效中標的)\n"
+        res = requests.get(url, params=params, timeout=20)
+        return res.json().get("data", [])
     except:
-        report += "  (處置股伺服器連線異常)\n"
+        return []
 
-    # 2. 法說會 (Open Data 彙整)
+def get_report():
+    # 1. 處置股 (從 TaiwanStockPrice 檢查處置狀態或公告)
+    # 註：FinMind 的處置資訊通常在 'TaiwanStockPrice' 的 'remark' 或是專門的 'TaiwanStockAnnouncement'
+    report = "🚫 【今日處置股名單】\n"
+    
+    # 這裡我們用最準的「公告」數據集
+    announcements = get_finmind_data("TaiwanStockAnnouncement")
+    
+    found_dis = False
+    for item in announcements:
+        content = item.get("type", "")
+        if "處置" in content:
+            code = item.get("stock_id", "")
+            date = item.get("date", "")
+            report += f"• {code} (公告日: {date})\n"
+            found_dis = True
+            
+    if not found_dis:
+        report += "  (今日 API 尚未更新處置公告)\n"
+
+    # 2. 法說會 (從股東大會/法說會數據集抓取)
     report += "\n🎙️ 【今日法說會資訊】\n"
-    try:
-        # 證交所法說會公告
-        url_conf = "https://openapi.twse.com.tw/v1/mops/t100sb02_1"
-        res_conf = requests.get(url_conf, timeout=20)
-        conf_data = res_conf.json()
-        
-        found_conf = []
-        for item in conf_data:
-            # 比對西元日期或帶斜線的日期
-            m_date = str(item.get('MeetDate', '')).replace('/', '')
-            if m_date == today_std:
-                found_conf.append(f"• {item.get('Code')} {item.get('Name')}")
-        
-        if found_conf:
-            report += "\n".join(list(set(found_conf)))
-        else:
-            report += "  (今日官方暫無登記法說)"
-    except:
-        report += "  (法說會資料連線異常)"
+    conferences = get_finmind_data("TaiwanStockConference") # FinMind 專屬法說數據集
+    
+    if conferences:
+        for con in conferences:
+            report += f"• {con.get('stock_id')} {con.get('stock_name')}\n  ⏰ 時間: {con.get('start_time')}\n"
+    else:
+        report += "  (今日暫無登記法說)\n"
         
     return report
 
@@ -73,6 +65,9 @@ def send_line(msg):
     requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=payload)
 
 if __name__ == "__main__":
-    content = get_report()
-    date_head = datetime.datetime.now().strftime('%Y/%m/%d')
-    send_line(f"🚀 台股數據中心 ({date_head})\n\n{content}")
+    if not FINMIND_TOKEN:
+        send_line("❌ 錯誤：未設定 FINMIND_API_TOKEN")
+    else:
+        final_msg = get_report()
+        date_str = datetime.datetime.now().strftime('%Y/%m/%d')
+        send_line(f"🛡️ FinMind 專業報表 ({date_str})\n\n{final_msg}")
