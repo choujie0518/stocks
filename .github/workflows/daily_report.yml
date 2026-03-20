@@ -32,4 +32,5 @@ jobs:
         env:
           LINE_ACCESS_TOKEN: ${{ secrets.LINE_ACCESS_TOKEN }}
           USER_ID: ${{ secrets.USER_ID }}
+          FINMIND_API_TOKEN: ${{ secrets.FINMIND_API_TOKEN }}
         run: python main.py
